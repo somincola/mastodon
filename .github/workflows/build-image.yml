@@ -14,6 +14,28 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for tags
+
+      - name: Get version from latest tag
+        id: version
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          # Get the latest tag matching v* pattern
+          LATEST_TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo '')
+          if [[ -n "$LATEST_TAG" ]]; then
+            # Extract version number (remove 'v' prefix and any suffix)
+            VERSION=$(echo "$LATEST_TAG" | sed 's/^v//' | sed 's/-.*$//')
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            echo "Found version: $VERSION from tag: $LATEST_TAG"
+          else
+            # Fallback: use commit SHA short
+            VERSION="custom-${GITHUB_SHA:0:8}"
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            echo "No tag found, using: $VERSION"
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -34,6 +56,7 @@ jobs:
           tags: |
             type=pep440,pattern={{raw}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=pep440,pattern=v{{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ steps.version.outputs.VERSION }}-custom,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/') }}
             type=raw,value=latest
 
       - name: Build and push
@@ -41,7 +64,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -55,6 +78,28 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for tags
+
+      - name: Get version from latest tag
+        id: version
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          # Get the latest tag matching v* pattern
+          LATEST_TAG=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || echo '')
+          if [[ -n "$LATEST_TAG" ]]; then
+            # Extract version number (remove 'v' prefix and any suffix)
+            VERSION=$(echo "$LATEST_TAG" | sed 's/^v//' | sed 's/-.*$//')
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            echo "Found version: $VERSION from tag: $LATEST_TAG"
+          else
+            # Fallback: use commit SHA short
+            VERSION="custom-${GITHUB_SHA:0:8}"
+            echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+            echo "No tag found, using: $VERSION"
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -75,6 +120,7 @@ jobs:
           tags: |
             type=pep440,pattern={{raw}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=pep440,pattern=v{{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=${{ steps.version.outputs.VERSION }}-custom,enable=${{ github.event_name == 'push' && startsWith(github.ref, 'refs/heads/') }}
             type=raw,value=latest
 
       - name: Build and push
@@ -82,7 +128,7 @@ jobs:
         with:
           context: .
           file: ./streaming/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

@@ -100,13 +100,12 @@ with this program. If not, see https://www.gnu.org/licenses/
 
 ## Custom release workflow
 
-If you maintain your own Mastodon fork for custom themes or business rules, see [docs/release-flow.md](docs/release-flow.md) for the branching/CI strategy. The document explains how `main`, your custom branches, and `stable-<version>` snapshots work together, and which tags trigger `bailongctui/mastodon:<version>` and `:latest`.
+If you maintain your own Mastodon fork for custom themes or business rules, see [docs/release-flow.md](docs/release-flow.md) for the branching/CI strategy. The document explains how `main`, your custom branches, and version tags work together, and which tags trigger `bailongctui/mastodon:<version>` and `:latest`.
 
-The workflow is automated by `scripts/release-flow.sh`, which:
+To create a new release version:
 
-- syncs `main` with `upstream/main`,
-- merges `main` into your custom branch (default `custom-ui-fix`),
-- creates a `stable-<version>` branch,
-- tags it `v<version>-<suffix>`, and pushes everything so build-image runs.
+1. Ensure your `custom-ui-fix` branch is up to date with `main`
+2. Create and push a tag: `git tag v4.5.2 && git push origin v4.5.2`
+3. GitHub Actions will automatically build and push the Docker images
 
-Run the script from any branch after the custom branch has incorporated the latest upstream changes.
+See [docs/release-flow.md](docs/release-flow.md) for detailed instructions.

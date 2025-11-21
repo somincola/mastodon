@@ -5,39 +5,46 @@ This repository keeps Mastodon’s upstream history while layering on your theme
 ## Branch responsibilities
 - `main` should stay synchronized with `mastodon/main`. You can merge (or rebase) upstream changes as they land, but avoid committing custom edits directly on `main`.  
 - `custom-ui-fix` (or another feature branch) is where you keep your UI, styling, and business logic changes. Rebase or merge it on top of `main` before publishing.  
-- `stable-<version>` branches are short-lived snapshots created for each release. They point to the commit you tagged (combined `main` + `custom-ui-fix`) and are what your Docker build workflow consumes.
+- Version tags (e.g., `v4.5.2`) mark specific releases. Tag your `custom-ui-fix` branch when ready to build a new version.
 
 ## Release steps
-1. Run `git fetch upstream` and merge `upstream/main` into `main`. Resolve any upstream conflicts on `main` so it still mirrors the official repository.  
-2. Rebase or merge `main` into `custom-ui-fix` to bring your changes up to date. Resolve conflicts here if they touch the same files.  
-3. Use `scripts/release-flow.sh` (see next section) to:
-   - create a new `stable-<version>` branch based on `custom-ui-fix`,
-   - tag it with `v<version>-<suffix>`, and
-   - push the branch and tag to `origin`.
-4. GitHub Actions (`.github/workflows/build-image.yml`) will notice the tag and build both `bailongctui/mastodon:<tag>` and `bailongctui/mastodon:latest`. The streaming image is built from the same source tree, so it stays in sync.
-5. On your server, pull the new image (`:latest` or the explicit `:<tag>`) and restart the services.
 
-## Using `scripts/release-flow.sh`
-The script encodes the release steps above; it:
+1. **Sync upstream** (optional, to get latest updates):
+   ```bash
+   git fetch upstream
+   git checkout main
+   git merge upstream/main
+   git push origin main
+   ```
 
-1. Ensures there are no uncommitted changes.  
-2. Fetches `upstream`, merges it into `main`, and pushes `main` to `origin`.  
-3. Merges `main` into your custom branch (`custom-ui-fix` by default) and creates `stable-<version>`.  
-4. Tags the new commit as `v<version>-<suffix>` (default suffix is today’s date).  
-5. Pushes the stable branch and tag so the build workflow can fire.
+2. **Update your custom branch**:
+   ```bash
+   git checkout custom-ui-fix
+   git merge main  # or rebase if you prefer
+   git push origin custom-ui-fix
+   ```
 
-Example:
-```bash
-chmod +x scripts/release-flow.sh
-./scripts/release-flow.sh 4.5.2 2025.11.21
-```
+3. **Create a version tag**:
+   ```bash
+   # Make sure you're on the commit you want to tag
+   git checkout custom-ui-fix
+   
+   # Create and push the tag (format: vX.Y.Z)
+   git tag v4.5.2
+   git push origin v4.5.2
+   ```
 
-You can customize the script with environment variables:
-- `CUSTOM_BRANCH` overrides `custom-ui-fix`.  
-- `STABLE_PREFIX` / `TAG_PREFIX` adjust the naming strategy.  
-- `UPSTREAM_REMOTE` defaults to `upstream`.
+4. **GitHub Actions will automatically**:
+   - Detect the tag push
+   - Build Docker images for both `bailongctui/mastodon` and `bailongctui/mastodon-streaming`
+   - Tag them with version number (e.g., `4.5.2`, `4.5`) and `latest` (if tag matches `v4.5.*`)
 
-Run the script from any branch; it will check out `main`, `custom-ui-fix`, and the new stable branch as needed and leave you on the tagged commit.
+5. **Deploy to your server**:
+   ```bash
+   docker pull bailongctui/mastodon:4.5.2
+   # Or use :latest for automatic updates
+   docker pull bailongctui/mastodon:latest
+   ```
 
 ## Conflict handling
 - Conflicts with upstream should be resolved when merging `upstream/main` into `main`.  
