@@ -30,11 +30,11 @@ jobs:
         with:
           images: bailongctui/mastodon
           flavor: |
-            latest=${{ startsWith(github.ref, 'refs/tags/v4.5.') }}
+            latest=${{ startsWith(github.ref, 'refs/tags/v4.5.') || github.ref == 'refs/heads/custom-ui-fix' }}
           tags: |
-            type=pep440,pattern={{raw}}
-            type=pep440,pattern=v{{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=pep440,pattern={{raw}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=pep440,pattern=v{{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -71,11 +71,11 @@ jobs:
         with:
           images: bailongctui/mastodon-streaming
           flavor: |
-            latest=${{ startsWith(github.ref, 'refs/tags/v4.5.') }}
+            latest=${{ startsWith(github.ref, 'refs/tags/v4.5.') || github.ref == 'refs/heads/custom-ui-fix' }}
           tags: |
-            type=pep440,pattern={{raw}}
-            type=pep440,pattern=v{{major}}.{{minor}}
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=pep440,pattern={{raw}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=pep440,pattern=v{{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v5
