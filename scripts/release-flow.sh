@@ -16,10 +16,13 @@ This script:
 
 Arguments:
   version   Major.minor.patch for the release, e.g. 4.5.2
-            Note: For v4.5.x tags, workflow will also tag as :latest
+            Note: For v4.5.x tags, workflow will also create :latest tag
+            Docker images will be tagged as: <version>, v<major>.<minor>, and :latest
   suffix    Optional suffix appended to the git tag (default: none)
-            If provided, tag will be v<version>-<suffix>
-            Example: v4.5.2-2025.11.21
+            If provided, git tag will be v<version>-<suffix>
+            Docker image tag will be <version>-<suffix>
+            Example: suffix "2025.11.21" creates git tag v4.5.2-2025.11.21
+                     and Docker image tag 4.5.2-2025.11.21
 
 Environment (optional):
   UPSTREAM_REMOTE   remote name for upstream (default: upstream)
@@ -42,6 +45,13 @@ CUSTOM_BRANCH="${CUSTOM_BRANCH:-custom-ui-fix}"
 STABLE_PREFIX="${STABLE_PREFIX:-stable-}"
 TAG_PREFIX="${TAG_PREFIX:-v}"
 PUSH_CUSTOM="${PUSH_CUSTOM:-true}"
+
+# Validate version format (should be X.Y.Z)
+if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+  echo "❌ Invalid version format: ${VERSION}"
+  echo "   Version must be in format: X.Y.Z (e.g., 4.5.2)"
+  exit 1
+fi
 
 STABLE_BRANCH="${STABLE_PREFIX}${VERSION}"
 if [[ -n "${SUFFIX}" ]]; then
@@ -161,19 +171,34 @@ echo "✅ Release flow completed!"
 echo ""
 cat <<EOF
 Summary:
-  Version:     ${VERSION}
-  Tag:         ${TAG}
-  Stable branch: ${STABLE_BRANCH}
-  Custom branch: ${CUSTOM_BRANCH}
-  Latest tag:  ${LATEST_ENABLED:+✓ Enabled (v4.5.x pattern)}${LATEST_ENABLED:-✗ Disabled}
+  Version:        ${VERSION}
+  Git tag:        ${TAG} (pushed to GitHub)
+  Docker tags:    ${VERSION}${SUFFIX:+-${SUFFIX}}, ${LATEST_ENABLED:+4.5, latest}${LATEST_ENABLED:-none}
+  Stable branch:  ${STABLE_BRANCH}
+  Custom branch:  ${CUSTOM_BRANCH}
+  Latest tag:     ${LATEST_ENABLED:+✓ Enabled (v4.5.x pattern)}${LATEST_ENABLED:-✗ Disabled}
+  
+Note: Git tag format is ${TAG}, but Docker image tags use version number ${VERSION}${SUFFIX:+-${SUFFIX}} (without 'v' prefix)
 
 Next steps:
-  - GitHub Actions workflow should be triggered automatically
-  - Check Actions tab for build progress
-  - Images will be available at:
-    * bailongctui/mastodon:${TAG}
-    * bailongctui/mastodon-streaming:${TAG}
-    ${LATEST_ENABLED:+* bailongctui/mastodon:latest*}
-    ${LATEST_ENABLED:+* bailongctui/mastodon-streaming:latest*}
-  - Deploy using: docker pull bailongctui/mastodon:${TAG}
+  1. GitHub Actions workflow should be triggered automatically
+     Check: https://github.com/$(git config --get remote.origin.url | sed 's/.*github.com[:/]\([^.]*\).*/\1/')/actions
+  
+  2. Wait for build to complete (usually 15-20 minutes for AMD64)
+  
+  3. Verify images are available:
+     docker pull bailongctui/mastodon:${VERSION}${SUFFIX:+-${SUFFIX}}
+     docker pull bailongctui/mastodon-streaming:${VERSION}${SUFFIX:+-${SUFFIX}}
+  
+  4. Available image tags:
+     * bailongctui/mastodon:${VERSION}${SUFFIX:+-${SUFFIX}}
+     * bailongctui/mastodon-streaming:${VERSION}${SUFFIX:+-${SUFFIX}}
+     ${LATEST_ENABLED:+* bailongctui/mastodon:4.5 (minor version)}
+     ${LATEST_ENABLED:+* bailongctui/mastodon-streaming:4.5 (minor version)}
+     ${LATEST_ENABLED:+* bailongctui/mastodon:latest}
+     ${LATEST_ENABLED:+* bailongctui/mastodon-streaming:latest}
+  
+  5. Deploy to your server:
+     Update docker-compose.yml to use: bailongctui/mastodon:${VERSION}${SUFFIX:+-${SUFFIX}}
+     Or use :latest for automatic updates (only if version matches v4.5.x pattern)
 EOF
