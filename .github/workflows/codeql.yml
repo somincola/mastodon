@@ -5,11 +5,13 @@ on:
   push:
     branches:
       - 'main'
-      - 'stable-*'
+      # Disabled stable-* to avoid triggering on custom release branches
+      # - 'stable-*'
   pull_request:
     branches:
       - 'main'
-      - 'stable-*'
+      # Disabled stable-* to avoid triggering on custom release branches
+      # - 'stable-*'
   schedule:
     - cron: '22 6 * * 1'
 

@@ -4,7 +4,8 @@ on:
   push:
     branches:
       - 'main'
-      - 'stable-*'
+      # Disabled stable-* to avoid triggering on custom release branches
+      # - 'stable-*'
     paths:
       - crowdin.yml
       - app/javascript/mastodon/locales/en.json
