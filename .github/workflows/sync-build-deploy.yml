@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Upstream tag to build (e.g. v4.5.8). Empty = auto-detect latest stable.'
+        description: 'Upstream tag to build (e.g. v4.6.0). Empty = auto-detect latest v4.6.x stable.'
         required: false
         type: string
       force:
@@ -47,8 +47,8 @@ jobs:
           if [ -n "${{ inputs.version }}" ]; then
             TAG="${{ inputs.version }}"
           else
-            # Latest stable v4.x tag (won't auto-upgrade to v5+)
-            TAG=$(git tag -l 'v4.*' --sort=-v:refname | grep -E '^v4\.[0-9]+\.[0-9]+$' | head -1)
+            # Latest stable v4.6.x tag. Revisit patches before allowing v4.7+.
+            TAG=$(git tag -l 'v4.6.*' --sort=-v:refname | grep -E '^v4\.6\.[0-9]+$' | head -1)
           fi
 
           CLEAN="${TAG#v}"
@@ -185,10 +185,11 @@ jobs:
           **Docker Images:**
           - \`${{ env.DOCKERHUB_WEB }}:${VERSION#v}\`
           - \`${{ env.DOCKERHUB_STREAMING }}:${VERSION#v}\`
+          - \`${{ env.DOCKERHUB_WEB }}:latest\`
+          - \`${{ env.DOCKERHUB_STREAMING }}:latest\`
 
           **Customizations:**
           - Post character limit: 5000 (upstream: 500)
-          - Tangerine UI themes (Cherry, Lagoon, Purple)
 
           **Deploy status:** ${DEPLOY_STATUS}
           **Based on:** [mastodon/mastodon@${VERSION}](https://github.com/mastodon/mastodon/releases/tag/${VERSION})"
