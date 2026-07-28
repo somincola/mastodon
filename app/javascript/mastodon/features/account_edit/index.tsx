@@ -13,11 +13,16 @@ import { Button } from '@/mastodon/components/button';
 import { DismissibleCallout } from '@/mastodon/components/callout/dismissible';
 import { CustomEmojiProvider } from '@/mastodon/components/emoji/context';
 import { EmojiHTML } from '@/mastodon/components/emoji/html';
+import { ToggleField } from '@/mastodon/components/form_fields';
 import { useElementHandledLink } from '@/mastodon/components/status/handled_link';
 import { useAccount } from '@/mastodon/hooks/useAccount';
 import { useCurrentAccountId } from '@/mastodon/hooks/useAccountId';
+import { useCustomEmojis } from '@/mastodon/hooks/useCustomEmojis';
 import { autoPlayGif } from '@/mastodon/initial_state';
-import { fetchProfile } from '@/mastodon/reducers/slices/profile_edit';
+import {
+  fetchProfile,
+  patchProfile,
+} from '@/mastodon/reducers/slices/profile_edit';
 import { useAppDispatch, useAppSelector } from '@/mastodon/store';
 
 import { AccountEditColumn, AccountEditEmptyColumn } from './components/column';
@@ -42,6 +47,14 @@ export const messages = defineMessages({
     defaultMessage:
       'Your display name is how your name appears on your profile and in timelines.',
   },
+  displayNameAddLabel: {
+    id: 'account_edit.display_name.add_label',
+    defaultMessage: 'Add display name',
+  },
+  displayNameEditLabel: {
+    id: 'account_edit.display_name.edit_label',
+    defaultMessage: 'Edit display name',
+  },
   bioTitle: {
     id: 'account_edit.bio.title',
     defaultMessage: 'Bio',
@@ -49,6 +62,14 @@ export const messages = defineMessages({
   bioPlaceholder: {
     id: 'account_edit.bio.placeholder',
     defaultMessage: 'Add a short introduction to help others identify you.',
+  },
+  bioAddLabel: {
+    id: 'account_edit.bio.add_label',
+    defaultMessage: 'Add bio',
+  },
+  bioEditLabel: {
+    id: 'account_edit.bio.edit_label',
+    defaultMessage: 'Edit bio',
   },
   customFieldsTitle: {
     id: 'account_edit.custom_fields.title',
@@ -59,9 +80,13 @@ export const messages = defineMessages({
     defaultMessage:
       'Add your pronouns, external links, or anything else you’d like to share.',
   },
-  customFieldsName: {
-    id: 'account_edit.custom_fields.name',
-    defaultMessage: 'field',
+  customFieldsAddLabel: {
+    id: 'account_edit.custom_fields.add_label',
+    defaultMessage: 'Add field',
+  },
+  customFieldsEditLabel: {
+    id: 'account_edit.custom_fields.edit_label',
+    defaultMessage: 'Edit field',
   },
   customFieldsTipTitle: {
     id: 'account_edit.custom_fields.tip_title',
@@ -76,17 +101,21 @@ export const messages = defineMessages({
     defaultMessage:
       'Help others identify, and have quick access to, your favorite topics.',
   },
-  featuredHashtagsItem: {
-    id: 'account_edit.featured_hashtags.item',
-    defaultMessage: 'hashtags',
+  featuredHashtagsEditLabel: {
+    id: 'account_edit.featured_hashtags.edit_label',
+    defaultMessage: 'Add hashtags',
   },
   profileTabTitle: {
     id: 'account_edit.profile_tab.title',
-    defaultMessage: 'Profile tab settings',
+    defaultMessage: 'Profile display settings',
   },
   profileTabSubtitle: {
     id: 'account_edit.profile_tab.subtitle',
-    defaultMessage: 'Customize the tabs on your profile and what they display.',
+    defaultMessage: 'Customize how your profile is displayed.',
+  },
+  advancedSettingsTitle: {
+    id: 'account_edit.advanced_settings.title',
+    defaultMessage: 'Advanced settings',
   },
 });
 
@@ -97,32 +126,39 @@ export const AccountEdit: FC = () => {
 
   const dispatch = useAppDispatch();
 
-  const { profile } = useAppSelector((state) => state.profileEdit);
+  const { profile, isPending } = useAppSelector((state) => state.profileEdit);
   useEffect(() => {
     void dispatch(fetchProfile());
   }, [dispatch]);
 
   const maxFieldCount = useAppSelector(
     (state) =>
-      (state.server.getIn([
-        'server',
-        'configuration',
-        'accounts',
-        'max_profile_fields',
-      ]) as number | undefined) ?? 4,
+      state.server.server.item?.configuration.accounts.max_profile_fields ?? 4,
   );
 
   const handleOpenModal = useCallback(
-    (type: ModalType, props?: Record<string, unknown>) => {
-      dispatch(openModal({ modalType: type, modalProps: props ?? {} }));
+    (
+      type: ModalType,
+      {
+        modalProps = {},
+        ignoreFocus = false,
+      }: { modalProps?: Record<string, unknown>; ignoreFocus?: boolean } = {},
+    ) => {
+      dispatch(
+        openModal({
+          modalType: type,
+          modalProps,
+          ignoreFocus,
+        }),
+      );
     },
     [dispatch],
   );
   const handleNameEdit = useCallback(() => {
-    handleOpenModal('ACCOUNT_EDIT_NAME');
+    handleOpenModal('ACCOUNT_EDIT_NAME', { ignoreFocus: true });
   }, [handleOpenModal]);
   const handleBioEdit = useCallback(() => {
-    handleOpenModal('ACCOUNT_EDIT_BIO');
+    handleOpenModal('ACCOUNT_EDIT_BIO', { ignoreFocus: true });
   }, [handleOpenModal]);
   const handleCustomFieldAdd = useCallback(() => {
     handleOpenModal('ACCOUNT_EDIT_FIELD_EDIT');
@@ -142,8 +178,12 @@ export const AccountEdit: FC = () => {
     history.push('/profile/featured_tags');
   }, [history]);
 
+  const handleBotToggle = useCallback(() => {
+    void dispatch(patchProfile({ bot: !profile?.bot }));
+  }, [dispatch, profile?.bot]);
+
   // Normally we would use the account emoji, but we want all custom emojis to be available to render after editing.
-  const emojis = useAppSelector((state) => state.custom_emojis);
+  const emojis = useCustomEmojis();
   const htmlHandlers = useElementHandledLink({
     hashtagAccountId: profile?.id,
   });
@@ -182,8 +222,12 @@ export const AccountEdit: FC = () => {
           buttons={
             <EditButton
               onClick={handleNameEdit}
-              item={messages.displayNameTitle}
-              edit={hasName}
+              label={intl.formatMessage(
+                hasName
+                  ? messages.displayNameEditLabel
+                  : messages.displayNameAddLabel,
+              )}
+              icon={hasName}
             />
           }
         >
@@ -197,8 +241,10 @@ export const AccountEdit: FC = () => {
           buttons={
             <EditButton
               onClick={handleBioEdit}
-              item={messages.bioTitle}
-              edit={hasBio}
+              label={intl.formatMessage(
+                hasBio ? messages.bioEditLabel : messages.bioAddLabel,
+              )}
+              icon={hasBio}
             />
           }
         >
@@ -214,23 +260,25 @@ export const AccountEdit: FC = () => {
           description={messages.customFieldsPlaceholder}
           showDescription={!hasFields}
           buttons={
-            <>
-              <Button
-                className={classes.editButton}
-                onClick={handleCustomFieldReorder}
-                disabled={profile.fields.length <= 1}
-              >
-                <FormattedMessage
-                  id='account_edit.custom_fields.reorder_button'
-                  defaultMessage='Reorder fields'
+            <div className={classes.fieldButtons}>
+              {profile.fields.length > 1 && (
+                <Button
+                  className={classes.editButton}
+                  onClick={handleCustomFieldReorder}
+                >
+                  <FormattedMessage
+                    id='account_edit.custom_fields.reorder_button'
+                    defaultMessage='Reorder fields'
+                  />
+                </Button>
+              )}
+              {profile.fields.length < maxFieldCount && (
+                <EditButton
+                  label={intl.formatMessage(messages.customFieldsAddLabel)}
+                  onClick={handleCustomFieldAdd}
                 />
-              </Button>
-              <EditButton
-                item={messages.customFieldsName}
-                onClick={handleCustomFieldAdd}
-                disabled={profile.fields.length >= maxFieldCount}
-              />
-            </>
+              )}
+            </div>
           }
         >
           {hasFields && (
@@ -240,10 +288,7 @@ export const AccountEdit: FC = () => {
                   <div>
                     <AccountField {...field} {...htmlHandlers} />
                   </div>
-                  <AccountFieldActions
-                    item={intl.formatMessage(messages.customFieldsName)}
-                    id={field.id}
-                  />
+                  <AccountFieldActions id={field.id} />
                 </li>
               ))}
             </ol>
@@ -278,8 +323,8 @@ export const AccountEdit: FC = () => {
           buttons={
             <EditButton
               onClick={handleFeaturedTagsEdit}
-              edit={hasTags}
-              item={messages.featuredHashtagsItem}
+              icon={hasTags}
+              label={intl.formatMessage(messages.featuredHashtagsEditLabel)}
             />
           }
         >
@@ -302,6 +347,26 @@ export const AccountEdit: FC = () => {
             </Button>
           }
         />
+
+        <AccountEditSection title={messages.advancedSettingsTitle}>
+          <ToggleField
+            checked={profile.bot}
+            onChange={handleBotToggle}
+            disabled={isPending}
+            label={
+              <FormattedMessage
+                id='account_edit.advanced_settings.bot_label'
+                defaultMessage='Automated account'
+              />
+            }
+            hint={
+              <FormattedMessage
+                id='account_edit.advanced_settings.bot_hint'
+                defaultMessage='Signal to others that the account mainly performs automated actions and might not be monitored'
+              />
+            }
+          />
+        </AccountEditSection>
       </CustomEmojiProvider>
     </AccountEditColumn>
   );

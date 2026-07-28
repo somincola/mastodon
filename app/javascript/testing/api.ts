@@ -4,13 +4,13 @@ import { action } from 'storybook/actions';
 
 import { toSupportedLocale } from '@/mastodon/features/emoji/locale';
 
-import { customEmojiFactory, relationshipsFactory } from './factories';
+import { customEmojiFactory, relationshipsFactoryAPI } from './factories';
 
 export const mockHandlers = {
   mute: http.post<{ id: string }>('/api/v1/accounts/:id/mute', ({ params }) => {
     action('muting account')(params);
     return HttpResponse.json(
-      relationshipsFactory({ id: params.id, muting: true }),
+      relationshipsFactoryAPI({ id: params.id, muting: true }),
     );
   }),
   unmute: http.post<{ id: string }>(
@@ -18,7 +18,7 @@ export const mockHandlers = {
     ({ params }) => {
       action('unmuting account')(params);
       return HttpResponse.json(
-        relationshipsFactory({ id: params.id, muting: false }),
+        relationshipsFactoryAPI({ id: params.id, muting: false }),
       );
     },
   ),
@@ -27,7 +27,7 @@ export const mockHandlers = {
     ({ params }) => {
       action('blocking account')(params);
       return HttpResponse.json(
-        relationshipsFactory({ id: params.id, blocking: true }),
+        relationshipsFactoryAPI({ id: params.id, blocking: true }),
       );
     },
   ),
@@ -36,7 +36,7 @@ export const mockHandlers = {
     ({ params }) => {
       action('unblocking account')(params);
       return HttpResponse.json(
-        relationshipsFactory({
+        relationshipsFactoryAPI({
           id: params.id,
           blocking: false,
         }),
@@ -51,13 +51,17 @@ export const mockHandlers = {
     '/packs-dev/emoji/:locale.json',
     async ({ params }) => {
       const locale = toSupportedLocale(params.locale);
+      const key = `../../../../../node_modules/emojibase-data/${locale}/compact.json`;
+      const emojiModules = import.meta.glob<CompactEmoji[]>(
+        '../../../../../node_modules/emojibase-data/**/compact.json',
+        { import: 'default' },
+      );
+      const path = emojiModules[key];
+      if (!path) {
+        throw new Error(`Unsupported locale: ${locale}`);
+      }
       action('fetching emoji data')(locale);
-      const { default: data } = (await import(
-        /* @vite-ignore */
-        `emojibase-data/${locale}/compact.json`
-      )) as {
-        default: CompactEmoji[];
-      };
+      const data = await path();
 
       return HttpResponse.json([data]);
     },
