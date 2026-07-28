@@ -1,0 +1,410 @@
+diff --git a/app/models/form/admin_settings.rb b/app/models/form/admin_settings.rb
+--- a/app/models/form/admin_settings.rb
++++ b/app/models/form/admin_settings.rb
+@@ -25,6 +25,10 @@ class Form::AdminSettings
+     mascot
+     trends
+     trendable_by_default
++    trends_statuses_threshold
++    trends_statuses_score_halflife_hours
++    trends_tags_threshold
++    trends_links_threshold
+     show_domain_blocks
+     show_domain_blocks_rationale
+     allow_referrer_origin
+@@ -52,6 +56,10 @@ class Form::AdminSettings
+     content_cache_retention_period
+     backups_retention_period
+     min_age
++    trends_statuses_threshold
++    trends_statuses_score_halflife_hours
++    trends_tags_threshold
++    trends_links_threshold
+   ).freeze
+ 
+   BOOLEAN_KEYS = %i(
+@@ -111,6 +119,12 @@ class Form::AdminSettings
+   validates :remote_topic_feed_access, inclusion: { in: FEED_ACCESS_MODES }, if: -> { defined?(@remote_topic_feed_access) }
+   validates :media_cache_retention_period, :content_cache_retention_period, :backups_retention_period, numericality: { only_integer: true }, allow_blank: true, if: -> { defined?(@media_cache_retention_period) || defined?(@content_cache_retention_period) || defined?(@backups_retention_period) }
+   validates :min_age, numericality: { only_integer: true }, allow_blank: true, if: -> { defined?(@min_age) }
++  validates :trends_statuses_threshold, :trends_tags_threshold, :trends_links_threshold,
++            numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 100 },
++            if: -> { defined?(@trends_statuses_threshold) || defined?(@trends_tags_threshold) || defined?(@trends_links_threshold) }
++  validates :trends_statuses_score_halflife_hours,
++            numericality: { only_integer: true, greater_than_or_equal_to: 1, less_than_or_equal_to: 168 },
++            if: -> { defined?(@trends_statuses_score_halflife_hours) }
+   validates :site_short_description, length: { maximum: DESCRIPTION_LIMIT }, if: -> { defined?(@site_short_description) }
+   validates :thumbnail_description, length: { maximum: DESCRIPTION_LIMIT }, if: -> { defined?(@thumbnail_description) }
+   validates :status_page_url, url: true, allow_blank: true
+diff --git a/app/models/trends/base.rb b/app/models/trends/base.rb
+--- a/app/models/trends/base.rb
++++ b/app/models/trends/base.rb
+@@ -15,6 +15,7 @@ class Trends::Base
+   # @option options [ActiveSupport::Duration] :max_score_halflife How quickly a peak score decays
+   def initialize(options = {})
+     @options = self.class.default_options.merge(options)
++    @explicit_options = options.keys.freeze
+   end
+ 
+   def register(_status)
+@@ -52,6 +53,17 @@ class Trends::Base
+     redis.expire(used_key(at_time), 1.day.seconds)
+   end
+ 
++  def configured_integer(setting_key, fallback, min:, max:)
++    value = Integer(Setting.public_send(setting_key), exception: false)
++    value.nil? ? fallback : value.clamp(min, max)
++  rescue StandardError
++    fallback
++  end
++
++  def option_explicitly_configured?(key)
++    @explicit_options.include?(key)
++  end
++
+   private
+ 
+   def used_key(at_time)
+diff --git a/app/models/trends/links.rb b/app/models/trends/links.rb
+--- a/app/models/trends/links.rb
++++ b/app/models/trends/links.rb
+@@ -102,6 +102,8 @@ class Trends::Links < Trends::Base
+   private
+ 
+   def calculate_scores(preview_cards, at_time)
++    threshold = effective_threshold
++
+     items = preview_cards.map do |preview_card|
+       expected  = preview_card.history.get(at_time - 1.day).accounts.to_f
+       expected  = 1.0 if expected.zero?
+@@ -110,7 +112,7 @@ class Trends::Links < Trends::Base
+       max_score = preview_card.max_score
+       max_score = 0 if max_time.nil? || max_time < (at_time - options[:max_score_cooldown])
+ 
+-      score = if expected > observed || observed < options[:threshold]
++      score = if expected > observed || observed < threshold
+                 0
+               else
+                 ((observed - expected)**2) / expected
+@@ -139,4 +141,10 @@ class Trends::Links < Trends::Base
+     PreviewCardTrend.upsert_all(to_insert.map { |(score, preview_card)| { preview_card_id: preview_card.id, score: score, language: preview_card.language, allowed: preview_card.trendable? || false } }, unique_by: :preview_card_id) if to_insert.any?
+     PreviewCardTrend.where(preview_card_id: to_delete.map { |(_, preview_card)| preview_card.id }).delete_all if to_delete.any?
+   end
++
++  def effective_threshold
++    return options[:threshold] if option_explicitly_configured?(:threshold)
++
++    configured_integer(:trends_links_threshold, options[:threshold], min: 1, max: 100)
++  end
+ end
+diff --git a/app/models/trends/statuses.rb b/app/models/trends/statuses.rb
+--- a/app/models/trends/statuses.rb
++++ b/app/models/trends/statuses.rb
+@@ -115,11 +115,14 @@ class Trends::Statuses < Trends::Base
+   end
+ 
+   def calculate_scores(statuses, at_time)
++    threshold = effective_threshold
++    score_halflife = effective_score_halflife
++
+     items = statuses.map do |status|
+       expected  = 1.0
+       observed  = (status.reblogs_count + status.favourites_count).to_f
+ 
+-      score = if expected > observed || observed < options[:threshold]
++      score = if expected > observed || observed < threshold
+                 0
+               else
+                 ((observed - expected)**2) / expected
+@@ -128,7 +131,7 @@ class Trends::Statuses < Trends::Base
+       decaying_score = if score.zero? || !eligible?(status)
+                          0
+                        else
+-                         score * (0.5**((at_time.to_f - status.created_at.to_f) / options[:score_halflife].to_f))
++                         score * (0.5**((at_time.to_f - status.created_at.to_f) / score_halflife.to_f))
+                        end
+ 
+       [decaying_score, status]
+@@ -140,4 +143,16 @@ class Trends::Statuses < Trends::Base
+     StatusTrend.upsert_all(to_insert.map { |(score, status)| { status_id: status.id, account_id: status.account_id, score: score, language: status.language, allowed: status.trendable? || false } }, unique_by: :status_id) if to_insert.any?
+     StatusTrend.where(status_id: to_delete.map { |(_, status)| status.id }).delete_all if to_delete.any?
+   end
++
++  def effective_threshold
++    return options[:threshold] if option_explicitly_configured?(:threshold)
++
++    configured_integer(:trends_statuses_threshold, options[:threshold], min: 1, max: 100)
++  end
++
++  def effective_score_halflife
++    return options[:score_halflife] if option_explicitly_configured?(:score_halflife)
++
++    configured_integer(:trends_statuses_score_halflife_hours, options[:score_halflife].in_hours.to_i, min: 1, max: 168).hours
++  end
+ end
+diff --git a/app/models/trends/tags.rb b/app/models/trends/tags.rb
+--- a/app/models/trends/tags.rb
++++ b/app/models/trends/tags.rb
+@@ -92,6 +92,8 @@ class Trends::Tags < Trends::Base
+   private
+ 
+   def calculate_scores(tags, at_time)
++    threshold = effective_threshold
++
+     items = tags.map do |tag|
+       expected  = tag.history.get(at_time - 1.day).accounts.to_f
+       expected  = 1.0 if expected.zero?
+@@ -100,7 +102,7 @@ class Trends::Tags < Trends::Base
+       max_score = tag.max_score
+       max_score = 0 if max_time.nil? || max_time < (at_time - options[:max_score_cooldown])
+ 
+-      score = if expected > observed || observed < options[:threshold]
++      score = if expected > observed || observed < threshold
+                 0
+               else
+                 ((observed - expected)**2) / expected
+@@ -125,4 +127,10 @@ class Trends::Tags < Trends::Base
+     TagTrend.upsert_all(to_insert.map { |(score, tag)| { tag_id: tag.id, score: score, language: '', allowed: tag.trendable? || false } }, unique_by: %w(tag_id language)) if to_insert.any?
+     TagTrend.where(tag_id: to_delete.map { |(_, tag)| tag.id }).delete_all if to_delete.any?
+   end
++
++  def effective_threshold
++    return options[:threshold] if option_explicitly_configured?(:threshold)
++
++    configured_integer(:trends_tags_threshold, options[:threshold], min: 1, max: 100)
++  end
+ end
+diff --git a/app/views/admin/settings/discovery/show.html.haml b/app/views/admin/settings/discovery/show.html.haml
+--- a/app/views/admin/settings/discovery/show.html.haml
++++ b/app/views/admin/settings/discovery/show.html.haml
+@@ -23,6 +23,32 @@
+               wrapper: :with_label,
+               recommended: :not_recommended
+ 
++  .fields-row
++    .fields-row__column.fields-row__column-6.fields-group
++      = f.input :trends_statuses_threshold,
++                as: :string,
++                input_html: { inputmode: 'numeric', pattern: '[0-9]*', min: 1, max: 100 },
++                wrapper: :with_block_label
++
++    .fields-row__column.fields-row__column-6.fields-group
++      = f.input :trends_statuses_score_halflife_hours,
++                as: :string,
++                input_html: { inputmode: 'numeric', pattern: '[0-9]*', min: 1, max: 168 },
++                wrapper: :with_block_label
++
++  .fields-row
++    .fields-row__column.fields-row__column-6.fields-group
++      = f.input :trends_tags_threshold,
++                as: :string,
++                input_html: { inputmode: 'numeric', pattern: '[0-9]*', min: 1, max: 100 },
++                wrapper: :with_block_label
++
++    .fields-row__column.fields-row__column-6.fields-group
++      = f.input :trends_links_threshold,
++                as: :string,
++                input_html: { inputmode: 'numeric', pattern: '[0-9]*', min: 1, max: 100 },
++                wrapper: :with_block_label
++
+   %h2= t('admin.settings.discovery.public_timelines')
+ 
+   .fields-row
+diff --git a/config/locales/simple_form.en.yml b/config/locales/simple_form.en.yml
+--- a/config/locales/simple_form.en.yml
++++ b/config/locales/simple_form.en.yml
+@@ -112,4 +112,8 @@ en:
+         thumbnail_description: A description of the image to help people with visual impairments understand its content.
+         trendable_by_default: Skip manual review of trending content. Individual items can still be removed from trends after the fact.
+         trends: Trends show which posts, hashtags and news stories are gaining traction on your server.
++        trends_links_threshold: Minimum number of unique accounts sharing a link before it can trend. Accepted range is 1–100; the upstream default is 5.
++        trends_statuses_score_halflife_hours: Number of hours for a trending post's score to fall by half. Accepted range is 1–168; higher values keep posts trending longer.
++        trends_statuses_threshold: Minimum total favorites and boosts before a post can trend. Accepted range is 1–100; the upstream default is 5.
++        trends_tags_threshold: Minimum number of unique accounts using a hashtag before it can trend. Accepted range is 1–100; the upstream default is 5.
+         wrapstodon: Offer local users to generate a playful summary of their Mastodon use during the year. This feature is available between the 10th and 31st of December of each year, and is offered to users who made at least one Public or Quiet Public post and used at least one hashtag within the year.
+@@ -322,4 +326,8 @@ en:
+         thumbnail_description: Thumbnail alt text
+         trendable_by_default: Allow trends without prior review
+         trends: Enable trends
++        trends_links_threshold: Trending links threshold
++        trends_statuses_score_halflife_hours: Trending post score half-life (hours)
++        trends_statuses_threshold: Trending posts threshold
++        trends_tags_threshold: Trending hashtags threshold
+         wrapstodon: Enable Wrapstodon
+diff --git a/config/locales/simple_form.zh-CN.yml b/config/locales/simple_form.zh-CN.yml
+--- a/config/locales/simple_form.zh-CN.yml
++++ b/config/locales/simple_form.zh-CN.yml
+@@ -112,4 +112,8 @@ zh-CN:
+         thumbnail_description: 一段图像描述，可以帮助视力障碍人士理解其内容。
+         trendable_by_default: 跳过对热门内容的手工审核。个别项目仍可在之后从趋势中删除。
+         trends: 热门页中会显示正在你服务器上受到关注的嘟文、标签和新闻故事。
++        trends_links_threshold: 链接成为热门前所需的不同账号分享数。可设置为 1–100，官方默认值为 5。
++        trends_statuses_score_halflife_hours: 热门嘟文分数衰减一半所需的小时数。可设置为 1–168，数值越大，嘟文保持热门的时间越长。
++        trends_statuses_threshold: 嘟文成为热门前所需的喜欢与转嘟总数。可设置为 1–100，官方默认值为 5。
++        trends_tags_threshold: 话题标签成为热门前所需的不同账号使用数。可设置为 1–100，官方默认值为 5。
+         wrapstodon: 为本站用户提供生成他们过去一年使用 Mastodon 情况的趣味总结的功能。此功能在每年12月10日至12月31日提供给这一年发布过至少1条公开嘟文（无论是否设置为在时间线上显示）及至少使用过1个话题标签的用户。
+@@ -321,4 +325,8 @@ zh-CN:
+         thumbnail_description: 缩略图替代文本
+         trendable_by_default: 允许在未审核的情况下将话题置为热门
+         trends: 启用热门
++        trends_links_threshold: 热门链接阈值
++        trends_statuses_score_halflife_hours: 热门嘟文分数半衰期（小时）
++        trends_statuses_threshold: 热门嘟文阈值
++        trends_tags_threshold: 热门话题标签阈值
+         wrapstodon: 启用 Wrapstodon 年度回顾
+diff --git a/config/settings.yml b/config/settings.yml
+--- a/config/settings.yml
++++ b/config/settings.yml
+@@ -23,4 +23,8 @@ defaults: &defaults
+   thumbnail_description: ''
+   trends: true
+   trendable_by_default: false
++  trends_statuses_threshold: 5
++  trends_statuses_score_halflife_hours: 1
++  trends_tags_threshold: 5
++  trends_links_threshold: 5
+   disallowed_hashtags: # space separated string or list of hashtags without the hash
+diff --git a/spec/models/form/admin_settings_trends_spec.rb b/spec/models/form/admin_settings_trends_spec.rb
+new file mode 100644
+--- /dev/null
++++ b/spec/models/form/admin_settings_trends_spec.rb
+@@ -0,0 +1,29 @@
++# frozen_string_literal: true
++
++require 'rails_helper'
++
++RSpec.describe Form::AdminSettings do
++  describe 'trend settings' do
++    it { is_expected.to allow_value('1').for(:trends_statuses_threshold) }
++    it { is_expected.to_not allow_value('0').for(:trends_statuses_threshold) }
++    it { is_expected.to allow_value('168').for(:trends_statuses_score_halflife_hours) }
++    it { is_expected.to_not allow_value('169').for(:trends_statuses_score_halflife_hours) }
++    it { is_expected.to allow_value('100').for(:trends_tags_threshold) }
++    it { is_expected.to_not allow_value('101').for(:trends_links_threshold) }
++
++    it 'saves values as integers' do
++      form = described_class.new(
++        trends_statuses_threshold: '2',
++        trends_statuses_score_halflife_hours: '3',
++        trends_tags_threshold: '2',
++        trends_links_threshold: '2'
++      )
++
++      expect { form.save }
++        .to change(Setting, :trends_statuses_threshold).from(5).to(2)
++        .and change(Setting, :trends_statuses_score_halflife_hours).from(1).to(3)
++        .and change(Setting, :trends_tags_threshold).from(5).to(2)
++        .and change(Setting, :trends_links_threshold).from(5).to(2)
++    end
++  end
++end
+diff --git a/spec/system/admin/settings/discovery_trends_spec.rb b/spec/system/admin/settings/discovery_trends_spec.rb
+new file mode 100644
+--- /dev/null
++++ b/spec/system/admin/settings/discovery_trends_spec.rb
+@@ -0,0 +1,39 @@
++# frozen_string_literal: true
++
++require 'rails_helper'
++
++RSpec.describe 'Admin trend settings' do
++  let(:admin_user) { Fabricate(:admin_user) }
++
++  before { sign_in(admin_user) }
++
++  it 'renders and saves the configurable trend fields' do
++    visit admin_settings_discovery_path
++
++    expect(page)
++      .to have_field(form_label('form_admin_settings.trends_statuses_threshold'), with: '5')
++    expect(page)
++      .to have_field(form_label('form_admin_settings.trends_statuses_score_halflife_hours'), with: '1')
++    expect(page)
++      .to have_field(form_label('form_admin_settings.trends_tags_threshold'), with: '5')
++    expect(page)
++      .to have_field(form_label('form_admin_settings.trends_links_threshold'), with: '5')
++
++    fill_in form_label('form_admin_settings.trends_statuses_threshold'), with: '2'
++    fill_in form_label('form_admin_settings.trends_statuses_score_halflife_hours'), with: '3'
++    fill_in form_label('form_admin_settings.trends_tags_threshold'), with: '2'
++    fill_in form_label('form_admin_settings.trends_links_threshold'), with: '2'
++
++    click_on submit_button
++
++    expect(page)
++      .to have_content(success_message)
++    expect(Setting)
++      .to have_attributes(
++        trends_statuses_threshold: 2,
++        trends_statuses_score_halflife_hours: 3,
++        trends_tags_threshold: 2,
++        trends_links_threshold: 2
++      )
++  end
++end
+diff --git a/spec/models/trends/configurable_settings_spec.rb b/spec/models/trends/configurable_settings_spec.rb
+new file mode 100644
+--- /dev/null
++++ b/spec/models/trends/configurable_settings_spec.rb
+@@ -0,0 +1,61 @@
++# frozen_string_literal: true
++
++require 'rails_helper'
++
++RSpec.describe 'Configurable trend settings' do
++  describe Trends::Statuses do
++    subject(:trends) { described_class.new }
++
++    it 'reads current settings without recreating the trends object' do
++      allow(Setting).to receive_messages(
++        trends_statuses_threshold: 2,
++        trends_statuses_score_halflife_hours: 3
++      )
++
++      expect(trends.send(:effective_threshold)).to eq(2)
++      expect(trends.send(:effective_score_halflife)).to eq(3.hours)
++    end
++
++    it 'preserves explicitly supplied options' do
++      trends = described_class.new(threshold: 7, score_halflife: 8.hours)
++
++      allow(Setting).to receive_messages(
++        trends_statuses_threshold: 2,
++        trends_statuses_score_halflife_hours: 3
++      )
++
++      expect(trends.send(:effective_threshold)).to eq(7)
++      expect(trends.send(:effective_score_halflife)).to eq(8.hours)
++    end
++
++    it 'falls back to upstream options for invalid settings' do
++      allow(Setting).to receive_messages(
++        trends_statuses_threshold: 'invalid',
++        trends_statuses_score_halflife_hours: nil
++      )
++
++      expect(trends.send(:effective_threshold)).to eq(5)
++      expect(trends.send(:effective_score_halflife)).to eq(1.hour)
++    end
++  end
++
++  describe Trends::Tags do
++    subject(:trends) { described_class.new }
++
++    it 'reads the current threshold setting' do
++      allow(Setting).to receive(:trends_tags_threshold).and_return(2)
++
++      expect(trends.send(:effective_threshold)).to eq(2)
++    end
++  end
++
++  describe Trends::Links do
++    subject(:trends) { described_class.new }
++
++    it 'reads the current threshold setting' do
++      allow(Setting).to receive(:trends_links_threshold).and_return(2)
++
++      expect(trends.send(:effective_threshold)).to eq(2)
++    end
++  end
++end

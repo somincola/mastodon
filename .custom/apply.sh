@@ -6,10 +6,21 @@ SOURCE_DIR="${2:-.}"
 
 echo "==> Applying core custom patches to $SOURCE_DIR from $CUSTOM_DIR"
 
-for patch in "$CUSTOM_DIR/patches/"*.patch; do
-  [ -f "$patch" ] || continue
-  echo "  Applying patch: $(basename "$patch")"
-  git -C "$SOURCE_DIR" apply "$patch" --verbose
+shopt -s nullglob
+PATCHES=("$CUSTOM_DIR"/patches/*.patch)
+
+if [ "${#PATCHES[@]}" -eq 0 ]; then
+  echo "ERROR: No custom patches found in $CUSTOM_DIR/patches" >&2
+  exit 1
+fi
+
+echo "==> Preflight-checking ${#PATCHES[@]} patch(es)"
+git -C "$SOURCE_DIR" apply --check "${PATCHES[@]}"
+
+for patch in "${PATCHES[@]}"; do
+  echo "  Queued patch: $(basename "$patch")"
 done
+
+git -C "$SOURCE_DIR" apply --verbose "${PATCHES[@]}"
 
 echo "==> Core customizations applied successfully"

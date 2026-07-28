@@ -65,9 +65,32 @@ jobs:
             echo "::notice::Already up to date. Use force=true to rebuild."
           fi
 
-  # ─── Step 2: Build Docker images ───────────────────────────────────
-  build:
+  # ─── Step 2: Validate patches against the selected upstream tag ────
+  validate-patches:
     needs: detect-version
+    if: needs.detect-version.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork (patches & workflow)
+        uses: actions/checkout@v4
+        with:
+          path: fork
+
+      - name: Checkout upstream source at ${{ needs.detect-version.outputs.version }}
+        uses: actions/checkout@v4
+        with:
+          repository: mastodon/mastodon
+          ref: ${{ needs.detect-version.outputs.version }}
+          path: source
+
+      - name: Apply and verify custom patches
+        run: |
+          bash fork/.custom/apply.sh "$(pwd)/fork/.custom" "$(pwd)/source"
+          bash fork/.custom/verify.sh "$(pwd)/source"
+
+  # ─── Step 3: Build Docker images ───────────────────────────────────
+  build:
+    needs: [detect-version, validate-patches]
     if: needs.detect-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -124,7 +147,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
 
-  # ─── Step 3: Deploy to server ──────────────────────────────────────
+  # ─── Step 4: Deploy to server ──────────────────────────────────────
   deploy:
     needs: [detect-version, build]
     if: inputs.skip_deploy != true
@@ -155,7 +178,7 @@ jobs:
 
             echo "==> Deployment complete! Version: ${{ needs.detect-version.outputs.version }}"
 
-  # ─── Step 4: Record version & notify ───────────────────────────────
+  # ─── Step 5: Record version & notify ───────────────────────────────
   post-build:
     needs: [detect-version, build, deploy]
     if: always() && needs.build.result == 'success'
@@ -190,6 +213,7 @@ jobs:
 
           **Customizations:**
           - Post character limit: 5000 (upstream: 500)
+          - Admin-configurable thresholds for trending posts, hashtags, and links
 
           **Deploy status:** ${DEPLOY_STATUS}
           **Based on:** [mastodon/mastodon@${VERSION}](https://github.com/mastodon/mastodon/releases/tag/${VERSION})"
