@@ -26,7 +26,8 @@ phase() {
 }
 cd /opt/mastodon
 exec 9> /opt/mastodon/.deployment.lock
-flock -n 9 || { echo 'Another deployment or maintenance task holds the lock.' >&2; exit 1; }
+phase waiting-for-lock
+flock -w 300 9 || { echo 'Another deployment or maintenance task holds the lock.' >&2; exit 1; }
 compose_files=(-f /opt/mastodon/docker-compose.yml)
 if test -f /opt/mastodon/docker-compose.override.yml; then
   compose_files+=(-f /opt/mastodon/docker-compose.override.yml)
