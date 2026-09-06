@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Upstream tag to build (e.g. v4.6.0). Empty = auto-detect latest v4.6.x stable.'
+        description: 'Upstream stable tag (v4.6.x or v4.7.x). Empty = latest patch in the recorded release series.'
         required: false
         type: string
       force:
@@ -18,7 +18,7 @@ on:
         description: 'Build images only, skip server deployment'
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write
@@ -40,25 +40,45 @@ jobs:
 
       - name: Detect latest upstream stable version
         id: detect
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          FORCE_BUILD: ${{ inputs.force }}
+          BUILD_ONLY: ${{ inputs.skip_deploy }}
         run: |
+          set -euo pipefail
           git remote add upstream https://github.com/mastodon/mastodon.git 2>/dev/null || true
           git fetch upstream --tags --quiet
 
-          if [ -n "${{ inputs.version }}" ]; then
-            TAG="${{ inputs.version }}"
+          CURRENT=$(cat .current-version)
+          if [[ ! "$CURRENT" =~ ^v4\.(6|7)\.[0-9]+$ ]]; then
+            echo "::error::Unrecognized recorded version: $CURRENT"
+            exit 1
+          fi
+
+          if [ -n "$REQUESTED_VERSION" ]; then
+            TAG="$REQUESTED_VERSION"
           else
-            # Latest stable v4.6.x tag. Revisit patches before allowing v4.7+.
-            TAG=$(git tag -l 'v4.6.*' --sort=-v:refname | grep -E '^v4\.6\.[0-9]+$' | head -1)
+            # Stay on the recorded minor release until its upgrade is completed.
+            SERIES="${CURRENT%.*}"
+            TAG=$(git tag -l "$SERIES.*" --sort=-v:refname | grep -E '^v4\.(6|7)\.[0-9]+$' | sed -n '1p')
+          fi
+
+          if [[ ! "$TAG" =~ ^v4\.(6|7)\.[0-9]+$ ]] || ! git rev-parse --verify "refs/tags/$TAG^{commit}" >/dev/null; then
+            echo "::error::Unsupported or missing upstream stable tag: $TAG"
+            exit 1
+          fi
+          if [ "$BUILD_ONLY" != "true" ] && [ "$(printf '%s\n' "$CURRENT" "$TAG" | sort -V | tail -1)" != "$TAG" ]; then
+            echo "::error::Refusing an automatic downgrade from $CURRENT to $TAG"
+            exit 1
           fi
 
           CLEAN="${TAG#v}"
-          CURRENT=$(cat .current-version 2>/dev/null || echo "none")
 
           echo "version=$TAG" >> "$GITHUB_OUTPUT"
           echo "version_clean=$CLEAN" >> "$GITHUB_OUTPUT"
           echo "::notice::Upstream latest: $TAG | Currently built: $CURRENT"
 
-          if [ "$TAG" != "$CURRENT" ] || [ "${{ inputs.force }}" = "true" ]; then
+          if [ "$TAG" != "$CURRENT" ] || [ "$FORCE_BUILD" = "true" ]; then
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_build=false" >> "$GITHUB_OUTPUT"
@@ -143,14 +163,14 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ env.VERSION }}
             ${{ env.IMAGE }}:${{ env.VERSION }}-custom
-            ${{ env.IMAGE }}:latest
+            ${{ inputs.skip_deploy != true && github.ref == 'refs/heads/main' && format('{0}:latest', env.IMAGE) || '' }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
 
   # ─── Step 4: Deploy to server ──────────────────────────────────────
   deploy:
     needs: [detect-version, build]
-    if: inputs.skip_deploy != true
+    if: inputs.skip_deploy != true && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy via SSH
@@ -162,26 +182,27 @@ jobs:
           port: ${{ secrets.SERVER_PORT }}
           script_stop: true
           script: |
+            set -eu
             cd /opt/mastodon
 
             echo "==> Pulling new images..."
-            docker compose pull
+            docker compose pull web sidekiq streaming
 
             echo "==> Pre-deploying database migrations..."
-            docker compose run --rm web bin/rails db:migrate
+            docker compose run --rm --no-deps -e SKIP_POST_DEPLOYMENT_MIGRATIONS=true web bundle exec rails db:migrate
 
             echo "==> Restarting services..."
-            docker compose up -d
+            docker compose up -d --no-deps web sidekiq streaming
 
-            echo "==> Cleaning up old images..."
-            docker image prune -f
+            echo "==> Post-deployment database migrations..."
+            docker compose run --rm --no-deps web bundle exec rails db:migrate
 
             echo "==> Deployment complete! Version: ${{ needs.detect-version.outputs.version }}"
 
   # ─── Step 5: Record version & notify ───────────────────────────────
   post-build:
     needs: [detect-version, build, deploy]
-    if: always() && needs.build.result == 'success'
+    if: always() && needs.build.result == 'success' && needs.deploy.result == 'success' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
