@@ -52,6 +52,12 @@ Docker Hub 的两个标签不支持跨仓库原子更新。脚本在普通发布
 
 ## 当前切换
 
-本次将先复用已经完成完整演练的 4.7.1 镜像发布 latest，然后归档此前只包含固定镜像的 `docker-compose.override.yml`，让服务器恢复使用基础 Compose 中的 latest。两份镜像内容相同，因此这次只需更新容器的镜像引用，无需重新执行数据库迁移。
+2026-09-06 已完成切换：复用已经完整演练的 4.7.1 镜像发布 latest，并归档此前只包含固定镜像的 `docker-compose.override.yml`。服务器默认 Compose 和三个实际运行容器均使用 latest。两份镜像内容没有变化，本次未重复执行数据库迁移。
+
+- [发布 latest 的验证任务](https://github.com/somincola/mastodon/actions/runs/34017264910)通过。
+- [GitHub 实际部署任务](https://github.com/somincola/mastodon/actions/runs/34017458082)完成服务器部署与验收。
+- 六个服务均 healthy；三个应用容器的异常重启数为 0。公网 API 返回 4.7.1 / 5000 字，Streaming 健康检查返回 HTTP 200，37 组私钥验证通过。
+- 版本记录已同步为 v4.7.1，工作流已启用。维护 crontab 已接入共享部署锁。
+- 原固定镜像配置与原 crontab 保存在 `/opt/mastodon/automation/latest-setup-20260906/`。此次 GitHub 部署日志保存在 `/opt/mastodon/automation/34017458082-1/`。
 
 参考：[Docker 镜像标签发布](https://docs.docker.com/reference/cli/docker/buildx/imagetools/create/)、[Compose pull](https://docs.docker.com/reference/cli/docker/compose/pull/)、[GitHub 工作流串行控制](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)。

@@ -4,6 +4,8 @@
 
 生产目录为 `ssh mastodon` 上的 `/opt/mastodon`，使用 Docker Compose 和 Caddy。2026-09-06 已完成备份、构建、隔离演练、生产 4.7.0 前后迁移，并以 4.7.1 恢复服务。公网实例 API 已确认版本为 4.7.1、字数上限为 5000。
 
+同日已完成后续自动化调整：Docker Hub 的两个 latest、默认 Compose 和实际运行容器均已切换到 4.7.1，GitHub 定时更新已恢复。当前操作以 [latest 自动更新说明](LATEST-UPDATES.md) 为准；下文的固定镜像和暂停工作流属于本次手动升级阶段的历史步骤。
+
 官方说明：
 
 - https://github.com/mastodon/mastodon/releases/tag/v4.7.0
@@ -31,7 +33,7 @@
 - 5000 字限制保留；热门帖子阈值 3、分数半衰期 3 小时、标签阈值 3、链接阈值 5 保留。生产验证使用数据库只读事务，未发布测试帖子或修改设置。
 - 服务器本地与公网实例 API 验证通过；本地与公网 Streaming 健康端点返回 HTTP 200。Web、Sidekiq、Streaming、PostgreSQL、Redis、Elasticsearch 均 healthy，启动日志未发现检查范围内的异常。
 - Sidekiq 有 1 个工作进程，验收时 scheduler/default/mailers/push/pull/ingress 队列待处理数均为 0。定时与重试任务仍按自身计划处理。
-- 服务器原健康检查、每日备份和镜像清理 crontab 已原样恢复。旧 GitHub 升级工作流保持 `disabled_manually`；本分支已记录实际生产版本 `v4.7.1`，尚未合并 main。
+- 手动升级结束时已恢复原 crontab，并暂停旧 GitHub 工作流；随后已将自动更新调整合并 main 并重新启用，维护任务接入共享部署锁，实际生产版本仍为 `v4.7.1`。
 - 修复了原健康检查脚本的 HTTP 403 误报：本机 Web 请求补上站点 Host 和 HTTPS 转发头，使用 `/health`；Streaming 使用 `/api/v1/streaming/health`，两者要求 HTTP 200 并设置请求超时。升级前的日志也存在同一误报。原脚本私有备份为 `/opt/mastodon/upgrade-20260906/mastodon-healthcheck.before-4.7.1.sh`，通知开关保持关闭。
 
 最终停写备份：`/opt/mastodon/upgrade-20260906/final-4.6.7-20260906T044809Z`。
@@ -47,7 +49,7 @@
 - 原 main 工作流自动检测仅限 v4.6.x。显式版本输入可选择 v4.7.x，但原部署命令会在切换旧进程前直接运行所有迁移，不适合照搬到本次升级。
 - 原 `skip_deploy=true` 仍会发布 `latest`、修改 `.current-version` 和创建发布记录。本次构建使用 `codex/mastodon-4.7-upgrade` 分支，修复以上构建副作用；分支已推送，未合并 main。
 - 分支将手动构建默认设为跳过部署，并限制部署只能在 main 上执行。自动检测跟随 `.current-version` 的次版本系列，拒绝自动降级；生产版本记录仅在部署成功后更新。
-- 正式升级后，旧 GitHub 工作流已暂停。启用自动部署前需合并并继续适配：main 仍是原工作流，且本文安装的 digest 固定配置必须由将来的自动流程显式更新。仅重新启用旧工作流无法正确更新当前生产镜像。
+- 手动升级结束后，旧 GitHub 工作流曾暂停。后续已完成 main 工作流适配并恢复定时更新，固定镜像覆盖文件已归档；当前使用 latest，并在每次部署时核对实际拉取的 digest，详见自动更新说明。
 
 ## 备份与演练
 
