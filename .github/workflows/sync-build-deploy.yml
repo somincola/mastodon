@@ -2,245 +2,242 @@ name: Sync, Build & Deploy Custom Mastodon
 
 on:
   schedule:
-    - cron: '0 2 * * 1' # Every Monday 2AM UTC
+    - cron: '0 2 * * 1' # Monday 10:00 Asia/Shanghai; current stable patch series.
   workflow_dispatch:
     inputs:
       version:
-        description: 'Upstream stable tag (v4.6.x or v4.7.x). Empty = latest patch in the recorded release series.'
+        description: 'Stable upstream tag. Empty = latest patch in the current production series.'
         required: false
         type: string
       force:
-        description: 'Force rebuild even if version is unchanged'
-        required: false
+        description: 'Rebuild/redeploy even when version records are unchanged'
         type: boolean
         default: false
       skip_deploy:
-        description: 'Build images only, skip server deployment'
-        required: false
+        description: 'Skip server deployment (publishing latest is controlled separately)'
+        type: boolean
+        default: false
+      publish_latest:
+        description: 'Publish both verified images as latest (main only; no downgrades)'
         type: boolean
         default: true
+      reuse_images:
+        description: 'Use existing version images instead of rebuilding; still verify before publishing'
+        type: boolean
+        default: false
+
+# Serialize publication and deployment across every ref. Never cancel a migration.
+concurrency:
+  group: mastodon-release
+  cancel-in-progress: false
 
 permissions:
-  contents: write
-
-env:
-  DOCKERHUB_WEB: bailongctui/mastodon
-  DOCKERHUB_STREAMING: bailongctui/mastodon-streaming
+  contents: read
 
 jobs:
-  # ─── Step 1: Detect latest upstream stable version ──────────────────
   detect-version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.detect.outputs.version }}
-      version_clean: ${{ steps.detect.outputs.version_clean }}
-      should_build: ${{ steps.detect.outputs.should_build }}
+      version: ${{ steps.plan.outputs.version }}
+      version_clean: ${{ steps.plan.outputs.version_clean }}
+      should_run: ${{ steps.plan.outputs.should_run }}
+      build_images: ${{ steps.plan.outputs.build_images }}
+      publish_latest: ${{ steps.plan.outputs.publish_latest }}
+      deploy: ${{ steps.plan.outputs.deploy }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Detect latest upstream stable version
-        id: detect
+      - name: Select upstream stable patch release
+        id: plan
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
           FORCE_BUILD: ${{ inputs.force }}
-          BUILD_ONLY: ${{ inputs.skip_deploy }}
+          REUSE_IMAGES: ${{ inputs.reuse_images }}
+          PUBLISH_LATEST: ${{ inputs.publish_latest }}
+          SKIP_DEPLOY: ${{ inputs.skip_deploy }}
         run: |
           set -euo pipefail
-          git remote add upstream https://github.com/mastodon/mastodon.git 2>/dev/null || true
+          git remote add upstream https://github.com/mastodon/mastodon.git
           git fetch upstream --tags --quiet
+          python3 .custom/release_plan.py
 
-          CURRENT=$(cat .current-version)
-          if [[ ! "$CURRENT" =~ ^v4\.(6|7)\.[0-9]+$ ]]; then
-            echo "::error::Unrecognized recorded version: $CURRENT"
-            exit 1
-          fi
-
-          if [ -n "$REQUESTED_VERSION" ]; then
-            TAG="$REQUESTED_VERSION"
-          else
-            # Stay on the recorded minor release until its upgrade is completed.
-            SERIES="${CURRENT%.*}"
-            TAG=$(git tag -l "$SERIES.*" --sort=-v:refname | grep -E '^v4\.(6|7)\.[0-9]+$' | sed -n '1p')
-          fi
-
-          if [[ ! "$TAG" =~ ^v4\.(6|7)\.[0-9]+$ ]] || ! git rev-parse --verify "refs/tags/$TAG^{commit}" >/dev/null; then
-            echo "::error::Unsupported or missing upstream stable tag: $TAG"
-            exit 1
-          fi
-          if [ "$BUILD_ONLY" != "true" ] && [ "$(printf '%s\n' "$CURRENT" "$TAG" | sort -V | tail -1)" != "$TAG" ]; then
-            echo "::error::Refusing an automatic downgrade from $CURRENT to $TAG"
-            exit 1
-          fi
-
-          CLEAN="${TAG#v}"
-
-          echo "version=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version_clean=$CLEAN" >> "$GITHUB_OUTPUT"
-          echo "::notice::Upstream latest: $TAG | Currently built: $CURRENT"
-
-          if [ "$TAG" != "$CURRENT" ] || [ "$FORCE_BUILD" = "true" ]; then
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Already up to date. Use force=true to rebuild."
-          fi
-
-  # ─── Step 2: Validate patches against the selected upstream tag ────
   validate-patches:
     needs: detect-version
-    if: needs.detect-version.outputs.should_build == 'true'
+    if: needs.detect-version.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout fork (patches & workflow)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: fork
-
-      - name: Checkout upstream source at ${{ needs.detect-version.outputs.version }}
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: mastodon/mastodon
           ref: ${{ needs.detect-version.outputs.version }}
           path: source
-
-      - name: Apply and verify custom patches
+      - name: Verify patches and release controls
         run: |
-          bash fork/.custom/apply.sh "$(pwd)/fork/.custom" "$(pwd)/source"
-          bash fork/.custom/verify.sh "$(pwd)/source"
+          bash fork/.custom/apply.sh "$PWD/fork/.custom" "$PWD/source"
+          bash fork/.custom/verify.sh "$PWD/source"
+          python3 -m unittest discover -s fork/.custom/tests -v
 
-  # ─── Step 3: Build Docker images ───────────────────────────────────
-  build:
+  prepare-images:
     needs: [detect-version, validate-patches]
-    if: needs.detect-version.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
           - component: web
-            image_var: DOCKERHUB_WEB
+            image: bailongctui/mastodon
             dockerfile: Dockerfile
           - component: streaming
-            image_var: DOCKERHUB_STREAMING
+            image: bailongctui/mastodon-streaming
             dockerfile: streaming/Dockerfile
     steps:
-      - name: Checkout fork (patches & workflow)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           path: fork
-
-      - name: Checkout upstream source at ${{ needs.detect-version.outputs.version }}
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        if: needs.detect-version.outputs.build_images == 'true'
         with:
           repository: mastodon/mastodon
           ref: ${{ needs.detect-version.outputs.version }}
           path: source
-
       - name: Apply custom patches
-        run: |
-          chmod +x fork/.custom/apply.sh
-          bash fork/.custom/apply.sh "$(pwd)/fork/.custom" "$(pwd)/source"
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
+        if: needs.detect-version.outputs.build_images == 'true'
+        run: bash fork/.custom/apply.sh "$PWD/fork/.custom" "$PWD/source"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push ${{ matrix.component }}
+      - name: Build versioned image
+        id: build
+        if: needs.detect-version.outputs.build_images == 'true'
         uses: docker/build-push-action@v6
-        env:
-          IMAGE: ${{ env[matrix.image_var] }}
-          VERSION: ${{ needs.detect-version.outputs.version_clean }}
         with:
           context: ./source
           file: ./source/${{ matrix.dockerfile }}
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.IMAGE }}:${{ env.VERSION }}
-            ${{ env.IMAGE }}:${{ env.VERSION }}-custom
-            ${{ inputs.skip_deploy != true && github.ref == 'refs/heads/main' && format('{0}:latest', env.IMAGE) || '' }}
+            ${{ matrix.image }}:${{ needs.detect-version.outputs.version_clean }}
+            ${{ matrix.image }}:${{ needs.detect-version.outputs.version_clean }}-custom
+          labels: |
+            org.opencontainers.image.version=${{ needs.detect-version.outputs.version_clean }}
+            org.opencontainers.image.source=https://github.com/somincola/mastodon
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
-
-  # ─── Step 4: Deploy to server ──────────────────────────────────────
-  deploy:
-    needs: [detect-version, build]
-    if: inputs.skip_deploy != true && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1
+      - name: Verify the exact built or reused image
+        env:
+          IMAGE: ${{ matrix.image }}
+          COMPONENT: ${{ matrix.component }}
+          VERSION: ${{ needs.detect-version.outputs.version_clean }}
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          DIGEST="$BUILT_DIGEST"
+          if [ -z "$DIGEST" ]; then
+            DIGEST=$(docker buildx imagetools inspect "$IMAGE:$VERSION-custom" --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])')
+          fi
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || exit 2
+          docker pull "$IMAGE@$DIGEST"
+          if [ "$COMPONENT" = web ]; then
+            docker run --rm --network none --entrypoint ruby "$IMAGE@$DIGEST" -r ./lib/mastodon/version -e 'abort "Wrong image version" unless Mastodon::Version.to_a.join(".") == ARGV.fetch(0); abort "Missing 5000-character patch" unless File.read("app/validators/status_length_validator.rb").include?("MAX_CHARS = 5000")' "$VERSION"
+          else
+            docker run --rm --network none --entrypoint node "$IMAGE@$DIGEST" --check ./streaming/index.js
+          fi
+          mkdir -p receipts
+          printf '%s\n' "$DIGEST" > "receipts/$COMPONENT.digest"
+      - uses: actions/upload-artifact@v4
         with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          port: ${{ secrets.SERVER_PORT }}
-          script_stop: true
-          script: |
-            set -eu
-            cd /opt/mastodon
+          name: verified-image-${{ matrix.component }}
+          path: receipts/*.digest
+          if-no-files-found: error
+          retention-days: 30
 
-            echo "==> Pulling new images..."
-            docker compose pull web sidekiq streaming
-
-            echo "==> Pre-deploying database migrations..."
-            docker compose run --rm --no-deps -e SKIP_POST_DEPLOYMENT_MIGRATIONS=true web bundle exec rails db:migrate
-
-            echo "==> Restarting services..."
-            docker compose up -d --no-deps web sidekiq streaming
-
-            echo "==> Post-deployment database migrations..."
-            docker compose run --rm --no-deps web bundle exec rails db:migrate
-
-            echo "==> Deployment complete! Version: ${{ needs.detect-version.outputs.version }}"
-
-  # ─── Step 5: Record version & notify ───────────────────────────────
-  post-build:
-    needs: [detect-version, build, deploy]
-    if: always() && needs.build.result == 'success' && needs.deploy.result == 'success' && github.ref == 'refs/heads/main'
+  publish-latest:
+    needs: [detect-version, prepare-images]
+    if: needs.detect-version.outputs.publish_latest == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      web_digest: ${{ steps.receipts.outputs.web_digest }}
+      streaming_digest: ${{ steps.receipts.outputs.streaming_digest }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Update version tracker
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: verified-image-*
+          path: receipts
+          merge-multiple: true
+      - name: Read both verified digests
+        id: receipts
         run: |
-          echo "${{ needs.detect-version.outputs.version }}" > .current-version
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .current-version
-          git diff --cached --quiet || git commit -m "chore: built ${{ needs.detect-version.outputs.version }}"
-          git pull --rebase origin main
-          git push
-
-      - name: Create GitHub Release
+          echo "web_digest=$(cat receipts/web.digest)" >> "$GITHUB_OUTPUT"
+          echo "streaming_digest=$(cat receipts/streaming.digest)" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Publish and verify the latest pair
         env:
-          GH_TOKEN: ${{ github.token }}
+          WEB_DIGEST: ${{ steps.receipts.outputs.web_digest }}
+          STREAMING_DIGEST: ${{ steps.receipts.outputs.streaming_digest }}
+        run: bash .custom/promote-latest.sh "$WEB_DIGEST" "$STREAMING_DIGEST"
+
+  deploy:
+    needs: [detect-version, publish-latest]
+    if: needs.detect-version.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy latest and wait for server verification
+        env:
+          TARGET_VERSION: ${{ needs.detect-version.outputs.version }}
+          EXPECTED_WEB_DIGEST: ${{ needs.publish-latest.outputs.web_digest }}
+          EXPECTED_STREAMING_DIGEST: ${{ needs.publish-latest.outputs.streaming_digest }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: bash .custom/remote-deploy.sh
+
+  record-result:
+    needs: [detect-version, publish-latest, deploy]
+    if: always() && needs.publish-latest.result == 'success' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Record publication and successful deployment separately
+        env:
+          VERSION: ${{ needs.detect-version.outputs.version }}
+          WEB_DIGEST: ${{ needs.publish-latest.outputs.web_digest }}
+          STREAMING_DIGEST: ${{ needs.publish-latest.outputs.streaming_digest }}
+          DEPLOY_STATUS: ${{ needs.deploy.result }}
         run: |
-          VERSION="${{ needs.detect-version.outputs.version }}"
-          DEPLOY_STATUS=${{ needs.deploy.result }}
-
-          BODY="## Custom Mastodon ${VERSION}
-
-          **Docker Images:**
-          - \`${{ env.DOCKERHUB_WEB }}:${VERSION#v}\`
-          - \`${{ env.DOCKERHUB_STREAMING }}:${VERSION#v}\`
-          - \`${{ env.DOCKERHUB_WEB }}:latest\`
-          - \`${{ env.DOCKERHUB_STREAMING }}:latest\`
-
-          **Customizations:**
-          - Post character limit: 5000 (upstream: 500)
-          - Admin-configurable thresholds for trending posts, hashtags, and links
-
-          **Deploy status:** ${DEPLOY_STATUS}
-          **Based on:** [mastodon/mastodon@${VERSION}](https://github.com/mastodon/mastodon/releases/tag/${VERSION})"
-
-          gh release create "custom-${VERSION}" \
-            --title "Custom Mastodon ${VERSION}" \
-            --notes "$BODY" \
-            --latest \
-            || echo "Release already exists, skipping."
+          set -euo pipefail
+          printf '%s\n' "$VERSION" > .published-version
+          if [ "$DEPLOY_STATUS" = success ]; then printf '%s\n' "$VERSION" > .current-version; fi
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          Path('.published-images.json').write_text(json.dumps({
+              'version':os.environ['VERSION'],
+              'web':os.environ['WEB_DIGEST'],
+              'streaming':os.environ['STREAMING_DIGEST'],
+          },indent=2)+'\n')
+          PY
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add .published-version .published-images.json .current-version
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: publish $VERSION (deploy: $DEPLOY_STATUS)"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+          printf 'Published **%s** as both latest images. Server deployment: **%s**.\n' "$VERSION" "$DEPLOY_STATUS" >> "$GITHUB_STEP_SUMMARY"
