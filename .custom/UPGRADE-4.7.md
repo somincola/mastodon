@@ -2,7 +2,7 @@
 
 ## 范围与依据
 
-生产目录为 `ssh mastodon` 上的 `/opt/mastodon`，使用 Docker Compose 和 Caddy。本文将构建、数据库迁移、恢复服务分开。截至本次准备阶段，已执行备份、构建和隔离演练；下方生产停机与迁移步骤尚未执行。
+生产目录为 `ssh mastodon` 上的 `/opt/mastodon`，使用 Docker Compose 和 Caddy。2026-09-06 已完成备份、构建、隔离演练、生产 4.7.0 前后迁移，并以 4.7.1 恢复服务。公网实例 API 已确认版本为 4.7.1、字数上限为 5000。
 
 官方说明：
 
@@ -13,6 +13,33 @@
 
 本文采用**停写维护窗口**：停止 web、streaming、Sidekiq 后，用 4.7.0 临时容器分别执行前、后迁移，再统一以 4.7.1 启动。两个迁移阶段之间维持应用停止，因此没有旧进程继续访问新结构，也不对外开放中间版本。数据库、Redis、Elasticsearch 和 Caddy 保持运行。
 
+## 正式执行结果
+
+| 阶段 | UTC 时间（2026-09-06） | 结果 |
+| --- | --- | --- |
+| 开始维护 / 全部应用停止 | 04:47:59 / 04:48:07 | Web、Sidekiq、Streaming 停止写入 |
+| 最终备份本机校验完成 | 05:13:57 | 数据库、Redis、配置等 SHA-256 全部一致 |
+| 4.7.0 前迁移 | 05:14:15–05:14:41 | 退出码 0 |
+| 4.7.0 后迁移 | 05:14:41–05:14:56 | 退出码 0 |
+| 两版本只读检查完成 | 05:15:55 | 数据、私钥、定制设置全部通过 |
+| 启动 4.7.1 / 全部应用健康 | 05:16:24 / 05:16:57 | 三个应用使用固定 digest，重启次数均为 0 |
+
+从开始维护到全部应用健康约 29 分钟，北京时间为 12:47:59–13:16:57。主要等待项是最终数据库备份的异地传输；分段复制后对完整文件重新校验，未跳过备份就迁移。
+
+- 冻结时与迁移后均为 63,340 个账户、1,551,685 条帖子。迁移记录从 588 增至 615，4.7.1 无待执行迁移。
+- 37 组本地账户私钥全部迁入加密存储，均可解密且与公钥匹配，原字段已清空。
+- 5000 字限制保留；热门帖子阈值 3、分数半衰期 3 小时、标签阈值 3、链接阈值 5 保留。生产验证使用数据库只读事务，未发布测试帖子或修改设置。
+- 服务器本地与公网实例 API 验证通过；本地与公网 Streaming 健康端点返回 HTTP 200。Web、Sidekiq、Streaming、PostgreSQL、Redis、Elasticsearch 均 healthy，启动日志未发现检查范围内的异常。
+- Sidekiq 有 1 个工作进程，验收时 scheduler/default/mailers/push/pull/ingress 队列待处理数均为 0。定时与重试任务仍按自身计划处理。
+- 服务器原健康检查、每日备份和镜像清理 crontab 已原样恢复。旧 GitHub 升级工作流保持 `disabled_manually`；本分支已记录实际生产版本 `v4.7.1`，尚未合并 main。
+- 修复了原健康检查脚本的 HTTP 403 误报：本机 Web 请求补上站点 Host 和 HTTPS 转发头，使用 `/health`；Streaming 使用 `/api/v1/streaming/health`，两者要求 HTTP 200 并设置请求超时。升级前的日志也存在同一误报。原脚本私有备份为 `/opt/mastodon/upgrade-20260906/mastodon-healthcheck.before-4.7.1.sh`，通知开关保持关闭。
+
+最终停写备份：`/opt/mastodon/upgrade-20260906/final-4.6.7-20260906T044809Z`。
+
+本机最终副本：`/Users/nagihsu/Backups/mastodon/final-4.6.7-20260906T044809Z`。数据库 dump 为 579,795,842 字节；数据库、Redis、环境配置、Compose、全局角色与冻结基线均通过双端校验。早期完整应用备份和 4.6.7 回滚镜像继续保留。
+
+生产日志与阶段退出码保存在 `/opt/mastodon/upgrade-20260906/production-*.log`、`production-*.exit`。本机 `output/upgrade-20260906/production-result.json` 保存脱敏验收结果；敏感配置和数据库只保存在私有备份目录。
+
 ## 已核实的兼容性与自动化限制
 
 - 真正的补丁目录是 `.custom/patches/`。`001-character-limit.patch` 和 `002-configurable-trends.patch` 均可直接应用到官方 v4.7.0、v4.7.1；差异检查、Ruby 语法、YAML 和定制字段验证通过。
@@ -20,7 +47,7 @@
 - 原 main 工作流自动检测仅限 v4.6.x。显式版本输入可选择 v4.7.x，但原部署命令会在切换旧进程前直接运行所有迁移，不适合照搬到本次升级。
 - 原 `skip_deploy=true` 仍会发布 `latest`、修改 `.current-version` 和创建发布记录。本次构建使用 `codex/mastodon-4.7-upgrade` 分支，修复以上构建副作用；分支已推送，未合并 main。
 - 分支将手动构建默认设为跳过部署，并限制部署只能在 main 上执行。自动检测跟随 `.current-version` 的次版本系列，拒绝自动降级；生产版本记录仅在部署成功后更新。
-- 正式升级后需另行审查并启用自动部署：main 仍是原工作流，且本文安装的 digest 固定配置必须由将来的自动流程显式更新。不要把“镜像构建成功”当作“生产已升级”。
+- 正式升级后，旧 GitHub 工作流已暂停。启用自动部署前需合并并继续适配：main 仍是原工作流，且本文安装的 digest 固定配置必须由将来的自动流程显式更新。仅重新启用旧工作流无法正确更新当前生产镜像。
 
 ## 备份与演练
 
@@ -31,7 +58,7 @@
 | 4.7.0 | [34004838654](https://github.com/somincola/mastodon/actions/runs/34004838654) | `bailongctui/mastodon:4.7.0-custom` | `bailongctui/mastodon-streaming:4.7.0-custom` |
 | 4.7.1 | [34004840266](https://github.com/somincola/mastodon/actions/runs/34004840266) | `bailongctui/mastodon:4.7.1-custom` | `bailongctui/mastodon-streaming:4.7.1-custom` |
 
-四个镜像均为 `linux/amd64`，已拉取到服务器。digest 保存在服务器 `/opt/mastodon/upgrade-20260906/image-receipts.json`；该目录下 `compose.4.7.0.yml`、`compose.4.7.1.yml` 已验证只改变三个应用服务的镜像，尚未安装到生产默认配置。
+四个镜像均为 `linux/amd64`，已拉取到服务器。digest 保存在服务器 `/opt/mastodon/upgrade-20260906/image-receipts.json`；该目录下 `compose.4.7.0.yml`、`compose.4.7.1.yml` 已验证只改变三个应用服务的镜像。生产已将 4.7.1 文件安装为 `/opt/mastodon/docker-compose.override.yml`，普通 `docker compose` 命令会继续使用此次核对的固定镜像。
 
 服务器备份：`/opt/mastodon/backups/pre-4.7.0-20260906T014514Z`
 
@@ -45,11 +72,11 @@
 
 Redis 备份通过 `redis-check-rdb` 校验；归档中的生产环境文件与实际文件逐字节一致，三个加密密钥均存在。验证脚本在隔离库中使用真实事务提交，以覆盖 Setting 的 `after_commit` 缓存行为；没有修改补丁代码。
 
-这是应用恢复备份，并非云厂商整机快照。媒体存放在现有 Cloudflare R2 bucket，未复制远程对象；Elasticsearch 可重建索引未做在线目录拷贝。初次备份时应用继续运行，DB 与 Redis 是分别取快照，因此生产迁移前还要按下方步骤做停写后的最终备份。
+这是应用恢复备份，并非云厂商整机快照。媒体存放在现有 Cloudflare R2 bucket，未复制远程对象；Elasticsearch 可重建索引未做在线目录拷贝。初次备份时应用继续运行，DB 与 Redis 是分别取快照；生产迁移前已额外完成上文列出的停写最终备份及本机副本校验。
 
 ## 生产操作：逐步执行
 
-以下命令在 `ssh mastodon` 会话内执行。所有阶段共用：
+以下为本次执行的命令参考，生产已完成升级，不应重复执行整套维护流程。服务器命令在 `ssh mastodon` 会话内执行。所有阶段共用：
 
 ```bash
 set -euo pipefail
@@ -137,7 +164,7 @@ dc470 run --rm --no-deps -e SKIP_POST_DEPLOYMENT_MIGRATIONS=true \
   web bundle exec rails db:migrate 2>&1 | tee "$STAGE/production-4.7.0-pre.log"
 ```
 
-必须等待退出码为 0。遇到错误停止在当前阶段，不继续切换镜像或恢复旧进程。保持同一个 SSH 会话或使用 tmux，长迁移不要中途关闭连接。
+必须等待退出码为 0。遇到错误停止在当前阶段，不继续切换镜像或恢复旧进程。本次实际使用服务器上的独立 `nohup` 作业执行，日志和退出码写入文件，SSH 断开不影响迁移。直接手动运行上述命令时应使用 tmux 保留会话。
 
 ### 5. 保持全部应用停止，执行 4.7.0 后迁移
 
@@ -163,7 +190,8 @@ fi
 install -m 644 "$STAGE/compose.4.7.1.yml" docker-compose.override.yml
 docker compose up -d --no-deps --wait --wait-timeout 180 web streaming sidekiq
 docker compose ps
-curl -fsS https://m.somincola.org/api/v2/instance | python3 -c \
+curl -fsS -H 'Host: m.somincola.org' -H 'X-Forwarded-Proto: https' \
+  http://127.0.0.1:3000/api/v2/instance | python3 -c \
   'import json,sys; x=json.load(sys.stdin); print(x["version"],x["configuration"]["statuses"]["max_characters"]); assert x["version"]=="4.7.1"; assert x["configuration"]["statuses"]["max_characters"]==5000'
 ```
 
