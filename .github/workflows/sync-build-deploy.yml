@@ -37,6 +37,7 @@ permissions:
 jobs:
   detect-version:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.plan.outputs.version }}
       version_clean: ${{ steps.plan.outputs.version_clean }}
@@ -64,6 +65,7 @@ jobs:
     needs: detect-version
     if: needs.detect-version.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -81,7 +83,9 @@ jobs:
 
   prepare-images:
     needs: [detect-version, validate-patches]
+    if: needs.detect-version.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -159,6 +163,7 @@ jobs:
     needs: [detect-version, prepare-images]
     if: needs.detect-version.outputs.publish_latest == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       web_digest: ${{ steps.receipts.outputs.web_digest }}
       streaming_digest: ${{ steps.receipts.outputs.streaming_digest }}
@@ -207,6 +212,7 @@ jobs:
     needs: [detect-version, publish-latest, deploy]
     if: always() && needs.publish-latest.result == 'success' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:
