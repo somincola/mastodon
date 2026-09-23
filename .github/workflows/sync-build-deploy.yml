@@ -46,7 +46,7 @@ jobs:
       publish_latest: ${{ steps.plan.outputs.publish_latest }}
       deploy: ${{ steps.plan.outputs.deploy }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Select upstream stable patch release
         id: plan
         env:
@@ -67,10 +67,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: fork
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: mastodon/mastodon
           ref: ${{ needs.detect-version.outputs.version }}
@@ -97,10 +97,10 @@ jobs:
             image: bailongctui/mastodon-streaming
             dockerfile: streaming/Dockerfile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: fork
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: needs.detect-version.outputs.build_images == 'true'
         with:
           repository: mastodon/mastodon
@@ -168,7 +168,7 @@ jobs:
       web_digest: ${{ steps.receipts.outputs.web_digest }}
       streaming_digest: ${{ steps.receipts.outputs.streaming_digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           pattern: verified-image-*
@@ -196,7 +196,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Deploy latest and wait for server verification
         env:
           TARGET_VERSION: ${{ needs.detect-version.outputs.version }}
@@ -216,7 +216,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
       - name: Record publication and successful deployment separately
