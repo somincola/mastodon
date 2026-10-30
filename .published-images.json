@@ -1,5 +1,5 @@
 {
-  "version": "v4.7.3",
-  "web": "sha256:88b75e0ce4c8a5f766905bbef73031eff54009518560bb9ccb1d5e77c817adb0",
-  "streaming": "sha256:54e05b51ff60a7cd4a394e1970043c21b3cbc7ea2bf0aa22e20752bc3fcc644a"
+  "version": "v4.7.4",
+  "web": "sha256:a1516530a5b016c426afbdceae28b603b9feeee33a23fbb1104b8753575b0cd5",
+  "streaming": "sha256:6efaca82dcd8ed79438bd664e5d9a79a669d40b1e25d93a66ed45fbe5451966c"
 }
