@@ -23,16 +23,55 @@ test "$host_key_type" = ssh-ed25519
 printf 'mastodon-production %s %s\n' "$host_key_type" "$host_key" > "$ssh_dir/known_hosts"
 opts=(-i "$ssh_dir/key" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o HostKeyAlias=mastodon-production -o "UserKnownHostsFile=$ssh_dir/known_hosts" -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=4)
 destination="$SERVER_USER@$SERVER_HOST"
-ssh -n -p "$port" "${opts[@]}" "$destination" "umask 077; mkdir -p '$run_dir'; chmod 700 '$run_dir'"
-scp -P "$port" "${opts[@]}" .custom/deploy-latest.sh .custom/verify-running.rb "$destination:$run_dir/"
-ssh -n -p "$port" "${opts[@]}" "$destination" "set -e; test ! -e '$run_dir/phase'; nohup bash '$run_dir/deploy-latest.sh' '$target' '$web_digest' '$stream_digest' '$run_dir' > '$run_dir/output.log' 2>&1 < /dev/null &"
+# Make a new private directory. Refuse an existing run instead of overwriting it.
+ssh -n -T -p "$port" "${opts[@]}" "$destination" "sudo -n /usr/bin/mkdir -m 700 -- '$run_dir'"
+
+# These uploads use stdin, so they must NOT use ssh -n.
+ssh -T -p "$port" "${opts[@]}" "$destination" "sudo -n /usr/bin/tee -- '$run_dir/deploy-latest.sh' >/dev/null" < .custom/deploy-latest.sh
+ssh -T -p "$port" "${opts[@]}" "$destination" "sudo -n /usr/bin/tee -- '$run_dir/verify-running.rb' >/dev/null" < .custom/verify-running.rb
+ssh -n -T -p "$port" "${opts[@]}" "$destination" "sudo -n /usr/bin/chmod 600 -- '$run_dir/deploy-latest.sh' '$run_dir/verify-running.rb'"
+
+read -r deploy_sha _ < <(sha256sum .custom/deploy-latest.sh)
+read -r verify_sha _ < <(sha256sum .custom/verify-running.rb)
+ssh -T -p "$port" "${opts[@]}" "$destination" "sudo -n /usr/bin/sha256sum -c -" <<CHECKSUMS
+$deploy_sha  $run_dir/deploy-latest.sh
+$verify_sha  $run_dir/verify-running.rb
+CHECKSUMS
+ssh -n -T -p "$port" "${opts[@]}" "$destination" "sudo -n /bin/bash -n '$run_dir/deploy-latest.sh'"
+
+# Run as a root-owned system service, independent of the SSH/sudo session.
+# Type=exec and StandardOutput=append are supported by systemd 249.
+unit="mastodon-deploy-$run_id"
+if ! ssh -n -T -p "$port" "${opts[@]}" "$destination" "sudo -n /usr/bin/systemd-run --unit='$unit' --uid=root --property=Type=exec --property=Restart=no --property=WorkingDirectory=/opt/mastodon --property=UMask=0077 --property='StandardOutput=append:$run_dir/output.log' --property=StandardError=inherit /usr/bin/env -i HOME=/root PATH=/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 /bin/bash '$run_dir/deploy-latest.sh' '$target' '$web_digest' '$stream_digest' '$run_dir'"; then
+  echo "Service start was not confirmed. Inspect $unit.service and $run_dir before retrying." >&2
+  exit 1
+fi
+
+remote_status() {
+  # This call also uses stdin, to pass a fixed status script to the root shell.
+  ssh -T -p "$port" "${opts[@]}" "$destination" "sudo -n /bin/bash -s -- '$run_dir' '$unit'" <<'STATUS'
+set -euo pipefail
+run_dir=$1
+unit=$2
+if test -s "$run_dir/exit-code"; then
+  printf 'EXIT='
+  cat "$run_dir/exit-code"
+elif /usr/bin/systemctl is-failed --quiet "$unit.service"; then
+  printf 'EXIT=1'
+elif test -f "$run_dir/phase"; then
+  cat "$run_dir/phase"
+else
+  printf 'starting'
+fi
+STATUS
+}
 last_phase=''
 connection_failures=0
 for ((attempt=0; attempt<240; attempt++)); do
-  if ! status=$(ssh -n -p "$port" "${opts[@]}" "$destination" "if test -f '$run_dir/exit-code'; then printf 'EXIT='; cat '$run_dir/exit-code'; elif test -f '$run_dir/phase'; then cat '$run_dir/phase'; else printf 'starting'; fi"); then
+  if ! status=$(remote_status); then
     ((connection_failures+=1))
     if (( connection_failures >= 3 )); then
-      echo "Connection lost. The server job may still be running: $run_dir" >&2
+      echo "Unable to read deployment status. The server job may still be running: $run_dir" >&2
       exit 1
     fi
     sleep 15

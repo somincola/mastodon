@@ -50,6 +50,16 @@ Docker Hub 的两个标签不支持跨仓库原子更新。脚本在普通发布
 
 修改服务器 SSH 主机密钥后，需要核对并更新 `.custom/server-host-key.pub`；它仅保存经过验证的公开主机密钥，不包含登录私钥。
 
+## 非 root SSH 部署
+
+`SERVER_USER` 继续从 Repository secrets 读取。关闭 root SSH 登录后，可使用已获准非交互 sudo 的部署账号；无需重新开放 root 登录。本流程沿用该账号已有的权限，不会创建 sudoers 规则，也不提供最小权限隔离。不要在日志或聊天中输出登录私钥。
+
+传输脚本使用 `sudo -n` 创建 root 私有运行目录，通过 SSH 标准输入上传 root 所有的部署脚本并核对 SHA256，再交给 root systemd 临时服务执行。上传和状态查询会使用 stdin，不能加 `ssh -n`。服务器需要 systemd 249 或兼容其 `Type=exec`、`StandardOutput=append:` 的版本，以及 `/usr/bin/docker`。这仍会完整执行备份、迁移、健康等待和应用验收，不只是运行 `pull` 和 `up -d`。
+
+服务名为 `mastodon-deploy-<run-id>-<attempt>.service`。SSH 断开后，服务由 systemd 继续管理；查看状态和私有日志需要 sudo。若启动结果不明确，先核对服务、`phase`、`exit-code` 和 `output.log`，不要盲目重复部署。已有运行目录不会被覆盖；确认现场后，需要用新的 GitHub run attempt 重试。修改代码后要从新提交发起运行，重跑旧 run 不会采用新补丁。
+
+`Test custom deployment controls` 工作流只运行 Bash 语法检查和离线 unittest，不读取 Secrets、不连接生产服务器、不构建或发布镜像。它包含模拟传输与失败路径测试，但不能替代实际 SSH、sudo 和生产部署验收。不要通过运行完整的发布工作流来测试 SSH；`skip_deploy=true` 也可能继续发布 latest。
+
 ## 当前切换
 
 2026-09-06 已完成切换：复用已经完整演练的 4.7.1 镜像发布 latest，并归档此前只包含固定镜像的 `docker-compose.override.yml`。服务器默认 Compose 和三个实际运行容器均使用 latest。两份镜像内容没有变化，本次未重复执行数据库迁移。
