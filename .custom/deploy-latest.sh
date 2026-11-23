@@ -14,7 +14,8 @@ mkdir -p "$run_dir"
 chmod 700 "$run_dir"
 finish() {
   local rc=$?
-  printf '%s\n' "$rc" > "$run_dir/exit-code"
+  printf '%s\n' "$rc" > "$run_dir/exit-code.new"
+  mv "$run_dir/exit-code.new" "$run_dir/exit-code"
   if (( rc != 0 )); then
     printf '%s\n' 'Deployment failed. Preserve logs and backup; do not downgrade images after migrations.' >&2
   fi

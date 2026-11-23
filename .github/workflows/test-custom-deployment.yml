@@ -1,0 +1,30 @@
+name: Test custom deployment controls
+
+on:
+  pull_request:
+    paths:
+      - '.custom/**'
+      - '.github/workflows/test-custom-deployment.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - '.custom/**'
+      - '.github/workflows/test-custom-deployment.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check shell syntax
+        run: |
+          for script in .custom/*.sh; do bash -n "$script"; done
+      - name: Test release and deployment controls without server access
+        run: python3 -m unittest discover -s .custom/tests -v
